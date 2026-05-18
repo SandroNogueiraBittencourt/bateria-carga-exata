@@ -2,13 +2,18 @@
 
 # 🔋 Battery Alert Shutdown — PowerShell
 
-Script PowerShell para Windows 11 que monitora continuamente
-o nível da bateria do notebook e executa as seguintes ações
-ao atingir 50% de carga:
+Lógica implementada
+🔌 Carregando e chegou a 50%
 
-1. Emite **4 bips** sonoros de alerta
-2. Inicia uma contagem regressiva de **1 minuto**
-3. **Desliga o computador** automaticamente
+Entra em loop emitindo 2 bips a cada 5 segundos
+Para quando o usuário retirar o carregador (detectado automaticamente) ou pressionar ENTER no terminal
+Após encerrar o alerta, retoma o monitoramento normalmente
+
+🪫 Descarregando e chegou a 50%
+
+Emite 4 bips
+Contagem regressiva de 1 minuto visível no terminal
+Desliga o computador automaticamente
 
 Funciona tanto durante o **carregamento** quanto durante o
 **consumo** da bateria.
