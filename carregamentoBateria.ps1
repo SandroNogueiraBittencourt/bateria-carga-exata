@@ -19,6 +19,31 @@
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
+# --- API para impedir suspensao e bloqueio de tela ---
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+
+public static class PowerState {
+    [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+    private static extern uint SetThreadExecutionState(uint esFlags);
+
+    private const uint ES_CONTINUOUS        = 0x80000000;
+    private const uint ES_SYSTEM_REQUIRED   = 0x00000001;
+    private const uint ES_DISPLAY_REQUIRED  = 0x00000002;
+
+    public static void PreventSleep() {
+        SetThreadExecutionState(
+            ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED
+        );
+    }
+
+    public static void AllowSleep() {
+        SetThreadExecutionState(ES_CONTINUOUS);
+    }
+}
+"@
+
 # --- Configuracoes ---
 $INTERVALO_MS     = 3000
 $FREQ_BIP         = 1000
@@ -128,6 +153,7 @@ $form.Font            = New-Object System.Drawing.Font("Segoe UI", 10)
 # Garante limpeza ao fechar
 $form.Add_FormClosing({
     Parar-EstresseCPU
+    [PowerState]::AllowSleep()
 })
 
 # --- Titulo ---
@@ -496,6 +522,9 @@ $btnStart.Add_Click({
     $script:rodando = $true
     $timer.Start()
 
+    # Impede suspensao e bloqueio de tela
+    [PowerState]::PreventSleep()
+
     $btnStart.Enabled   = $false
     $btnStart.BackColor = [System.Drawing.Color]::FromArgb(15, 110, 86)
     $btnStop.Enabled    = $true
@@ -516,6 +545,9 @@ $btnStop.Add_Click({
     $timer.Stop()
     Parar-EstresseCPU
     Atualizar-PainelDreno
+
+    # Restaura comportamento normal de suspensao/bloqueio
+    [PowerState]::AllowSleep()
 
     $btnStart.Enabled   = $true
     $btnStart.BackColor = [System.Drawing.Color]::FromArgb(29, 158, 117)
