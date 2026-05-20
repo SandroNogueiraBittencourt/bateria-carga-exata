@@ -1,16 +1,17 @@
 # ============================================================
 #  carregamentoBateria.ps1
-#  Interface grafica Windows Forms + logica de monitoramento
+#  Interface grafica + monitoramento + dreno de bateria
 #
 #  Logica:
 #  DESCARREGANDO:
-#    < 40%      -> avisa para carregar (vermelho)
+#    > 50%      -> ativa dreno (CPU stress + brilho maximo)
+#                  ate chegar em 50%, depois desativa dreno
 #    40% a 49%  -> desliga o computador
-#    >= 50%     -> exibe "aguarde, X% ainda" (neutro)
+#    < 40%      -> avisa para carregar
 #
 #  CARREGANDO:
-#    < 40%      -> avisa que ainda esta carregando (azul)
-#    >= 40%     -> avisa para desligar da tomada + bip (verde)
+#    < 40%      -> avisa que esta carregando
+#    >= 40%     -> avisa para desligar da tomada + bip
 #
 #  Windows 11 - Windows Forms (.NET nativo)
 # ============================================================
@@ -19,12 +20,16 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
 # --- Configuracoes ---
-$INTERVALO_MS   = 3000
-$FREQ_BIP       = 1000
-$DUR_BIP        = 400
+$INTERVALO_MS     = 3000
+$FREQ_BIP         = 1000
+$DUR_BIP          = 400
+$NUM_THREADS_CPU  = [Environment]::ProcessorCount   # usa todos os nucleos
 
 # --- Estado global ---
-$script:rodando = $false
+$script:rodando     = $false
+$script:drenoAtivo  = $false
+$script:jobsCPU     = @()
+$script:brilhoOriginal = $null
 
 # ============================================================
 #  FUNCOES AUXILIARES
@@ -50,18 +55,80 @@ function Get-CorBarra {
     return [System.Drawing.Color]::FromArgb(226, 75, 74)
 }
 
+# --- Controle de brilho ---
+function Get-BrilhoAtual {
+    try {
+        $b = Get-WmiObject -Namespace root\WMI -Class WmiMonitorBrightness -ErrorAction SilentlyContinue
+        if ($b) { return [int]$b.CurrentBrightness }
+    } catch {}
+    return 50
+}
+
+function Set-Brilho {
+    param([int]$Nivel)
+    try {
+        $m = Get-WmiObject -Namespace root\WMI -Class WmiMonitorBrightnessMethods -ErrorAction SilentlyContinue
+        if ($m) { $m.WmiSetBrightness(1, $Nivel) }
+    } catch {}
+}
+
+# --- Estresse de CPU ---
+function Iniciar-EstresseCPU {
+    if ($script:drenoAtivo) { return }
+    $script:drenoAtivo = $true
+
+    # Salva e aumenta brilho
+    $script:brilhoOriginal = Get-BrilhoAtual
+    Set-Brilho -Nivel 100
+
+    # Inicia N jobs de CPU em paralelo (loop infinito de calculos)
+    $script:jobsCPU = @()
+    for ($i = 0; $i -lt $NUM_THREADS_CPU; $i++) {
+        $job = Start-Job -ScriptBlock {
+            while ($true) {
+                [Math]::Sqrt([double]::MaxValue / 3.0) | Out-Null
+                [Math]::Pow(2.71828, 100) | Out-Null
+                [Math]::Sin(12345.6789) | Out-Null
+            }
+        }
+        $script:jobsCPU += $job
+    }
+}
+
+function Parar-EstresseCPU {
+    if (-not $script:drenoAtivo) { return }
+    $script:drenoAtivo = $false
+
+    # Para todos os jobs
+    foreach ($job in $script:jobsCPU) {
+        Stop-Job -Job $job -ErrorAction SilentlyContinue
+        Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+    }
+    $script:jobsCPU = @()
+
+    # Restaura brilho original
+    if ($null -ne $script:brilhoOriginal) {
+        Set-Brilho -Nivel $script:brilhoOriginal
+    }
+}
+
 # ============================================================
 #  JANELA PRINCIPAL
 # ============================================================
 
 $form = New-Object System.Windows.Forms.Form
 $form.Text            = "Monitor de Bateria"
-$form.Size            = New-Object System.Drawing.Size(400, 600)
+$form.Size            = New-Object System.Drawing.Size(400, 660)
 $form.StartPosition   = "CenterScreen"
 $form.FormBorderStyle = "FixedSingle"
 $form.MaximizeBox     = $false
 $form.BackColor       = [System.Drawing.Color]::FromArgb(245, 245, 243)
 $form.Font            = New-Object System.Drawing.Font("Segoe UI", 10)
+
+# Garante limpeza ao fechar
+$form.Add_FormClosing({
+    Parar-EstresseCPU
+})
 
 # --- Titulo ---
 $lblTitulo = New-Object System.Windows.Forms.Label
@@ -117,7 +184,7 @@ $barraFill.Location  = New-Object System.Drawing.Point(0, 0)
 $barraFill.BackColor = [System.Drawing.Color]::FromArgb(29, 158, 117)
 $barraPanel.Controls.Add($barraFill)
 
-# Marcacao do limite 40%
+# Marcacao 40%
 $marca40 = New-Object System.Windows.Forms.Panel
 $marca40.Size      = New-Object System.Drawing.Size(2, 24)
 $marca40.Location  = New-Object System.Drawing.Point([int](210 * 0.40), -4)
@@ -132,7 +199,22 @@ $lblMarca40.AutoSize  = $true
 $lblMarca40.Location  = New-Object System.Drawing.Point(130, 50)
 $painelPct.Controls.Add($lblMarca40)
 
-# --- Card Status ---
+# Marcacao 50%
+$marca50 = New-Object System.Windows.Forms.Panel
+$marca50.Size      = New-Object System.Drawing.Size(2, 24)
+$marca50.Location  = New-Object System.Drawing.Point([int](210 * 0.50), -4)
+$marca50.BackColor = [System.Drawing.Color]::FromArgb(239, 159, 39)
+$barraPanel.Controls.Add($marca50)
+
+$lblMarca50 = New-Object System.Windows.Forms.Label
+$lblMarca50.Text      = "50%"
+$lblMarca50.Font      = New-Object System.Drawing.Font("Segoe UI", 8)
+$lblMarca50.ForeColor = [System.Drawing.Color]::FromArgb(239, 159, 39)
+$lblMarca50.AutoSize  = $true
+$lblMarca50.Location  = New-Object System.Drawing.Point(162, 50)
+$painelPct.Controls.Add($lblMarca50)
+
+# --- Cards ---
 $cardStatus = New-Object System.Windows.Forms.Panel
 $cardStatus.Size        = New-Object System.Drawing.Size(174, 80)
 $cardStatus.Location    = New-Object System.Drawing.Point(20, 250)
@@ -156,7 +238,6 @@ $lblStatusValor.AutoSize  = $true
 $lblStatusValor.Location  = New-Object System.Drawing.Point(10, 34)
 $cardStatus.Controls.Add($lblStatusValor)
 
-# --- Card Monitor ---
 $cardMonitor = New-Object System.Windows.Forms.Panel
 $cardMonitor.Size        = New-Object System.Drawing.Size(174, 80)
 $cardMonitor.Location    = New-Object System.Drawing.Point(204, 250)
@@ -180,10 +261,42 @@ $lblMonitorValor.AutoSize  = $true
 $lblMonitorValor.Location  = New-Object System.Drawing.Point(10, 34)
 $cardMonitor.Controls.Add($lblMonitorValor)
 
+# --- Painel Dreno de Bateria ---
+$painelDreno = New-Object System.Windows.Forms.Panel
+$painelDreno.Size        = New-Object System.Drawing.Size(358, 56)
+$painelDreno.Location    = New-Object System.Drawing.Point(20, 350)
+$painelDreno.BackColor   = [System.Drawing.Color]::FromArgb(241, 239, 232)
+$painelDreno.BorderStyle = "FixedSingle"
+$form.Controls.Add($painelDreno)
+
+$lblDrenoTitulo = New-Object System.Windows.Forms.Label
+$lblDrenoTitulo.Text      = "DRENO DE BATERIA"
+$lblDrenoTitulo.Font      = New-Object System.Drawing.Font("Segoe UI", 8)
+$lblDrenoTitulo.ForeColor = [System.Drawing.Color]::FromArgb(136, 135, 128)
+$lblDrenoTitulo.AutoSize  = $true
+$lblDrenoTitulo.Location  = New-Object System.Drawing.Point(10, 6)
+$painelDreno.Controls.Add($lblDrenoTitulo)
+
+$lblDrenoValor = New-Object System.Windows.Forms.Label
+$lblDrenoValor.Text      = "Inativo"
+$lblDrenoValor.Font      = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+$lblDrenoValor.ForeColor = [System.Drawing.Color]::FromArgb(136, 135, 128)
+$lblDrenoValor.AutoSize  = $true
+$lblDrenoValor.Location  = New-Object System.Drawing.Point(10, 28)
+$painelDreno.Controls.Add($lblDrenoValor)
+
+$lblDrenoInfo = New-Object System.Windows.Forms.Label
+$lblDrenoInfo.Text      = ""
+$lblDrenoInfo.Font      = New-Object System.Drawing.Font("Segoe UI", 8)
+$lblDrenoInfo.ForeColor = [System.Drawing.Color]::FromArgb(136, 135, 128)
+$lblDrenoInfo.AutoSize  = $true
+$lblDrenoInfo.Location  = New-Object System.Drawing.Point(150, 32)
+$painelDreno.Controls.Add($lblDrenoInfo)
+
 # --- Painel de aviso ---
 $painelAviso = New-Object System.Windows.Forms.Panel
 $painelAviso.Size        = New-Object System.Drawing.Size(358, 70)
-$painelAviso.Location    = New-Object System.Drawing.Point(20, 350)
+$painelAviso.Location    = New-Object System.Drawing.Point(20, 422)
 $painelAviso.BackColor   = [System.Drawing.Color]::FromArgb(241, 239, 232)
 $painelAviso.BorderStyle = "FixedSingle"
 $form.Controls.Add($painelAviso)
@@ -207,7 +320,7 @@ $painelAviso.Controls.Add($lblAviso)
 # --- Legenda ---
 $painelLegenda = New-Object System.Windows.Forms.Panel
 $painelLegenda.Size        = New-Object System.Drawing.Size(358, 40)
-$painelLegenda.Location    = New-Object System.Drawing.Point(20, 436)
+$painelLegenda.Location    = New-Object System.Drawing.Point(20, 508)
 $painelLegenda.BackColor   = [System.Drawing.Color]::White
 $painelLegenda.BorderStyle = "FixedSingle"
 $form.Controls.Add($painelLegenda)
@@ -239,7 +352,7 @@ foreach ($item in $legendaItens) {
 $btnStart = New-Object System.Windows.Forms.Button
 $btnStart.Text      = "Start"
 $btnStart.Size      = New-Object System.Drawing.Size(174, 46)
-$btnStart.Location  = New-Object System.Drawing.Point(20, 492)
+$btnStart.Location  = New-Object System.Drawing.Point(20, 564)
 $btnStart.FlatStyle = "Flat"
 $btnStart.BackColor = [System.Drawing.Color]::FromArgb(29, 158, 117)
 $btnStart.ForeColor = [System.Drawing.Color]::White
@@ -250,7 +363,7 @@ $form.Controls.Add($btnStart)
 $btnStop = New-Object System.Windows.Forms.Button
 $btnStop.Text      = "Parar"
 $btnStop.Size      = New-Object System.Drawing.Size(174, 46)
-$btnStop.Location  = New-Object System.Drawing.Point(204, 492)
+$btnStop.Location  = New-Object System.Drawing.Point(204, 564)
 $btnStop.FlatStyle = "Flat"
 $btnStop.BackColor = [System.Drawing.Color]::FromArgb(209, 209, 199)
 $btnStop.ForeColor = [System.Drawing.Color]::FromArgb(95, 94, 90)
@@ -263,6 +376,21 @@ $form.Controls.Add($btnStop)
 #  LOGICA PRINCIPAL
 # ============================================================
 
+function Atualizar-PainelDreno {
+    if ($script:drenoAtivo) {
+        $painelDreno.BackColor   = [System.Drawing.Color]::FromArgb(252, 235, 235)
+        $lblDrenoValor.Text      = "ATIVO - Drenando"
+        $lblDrenoValor.ForeColor = [System.Drawing.Color]::FromArgb(163, 45, 45)
+        $lblDrenoInfo.Text       = "$NUM_THREADS_CPU threads + brilho 100%"
+        $lblDrenoInfo.ForeColor  = [System.Drawing.Color]::FromArgb(163, 45, 45)
+    } else {
+        $painelDreno.BackColor   = [System.Drawing.Color]::FromArgb(241, 239, 232)
+        $lblDrenoValor.Text      = "Inativo"
+        $lblDrenoValor.ForeColor = [System.Drawing.Color]::FromArgb(136, 135, 128)
+        $lblDrenoInfo.Text       = ""
+    }
+}
+
 function Aplicar-Logica {
     param([int]$Pct, [bool]$Carregando)
 
@@ -274,6 +402,10 @@ function Aplicar-Logica {
     if ($Carregando) {
         $lblStatusValor.Text      = "Carregando"
         $lblStatusValor.ForeColor = [System.Drawing.Color]::FromArgb(24, 95, 165)
+
+        # Se esta carregando, desativa dreno (usuario conectou na tomada)
+        if ($script:drenoAtivo) { Parar-EstresseCPU }
+        Atualizar-PainelDreno
 
         if ($Pct -lt 40) {
             $aviso = "Bateria em $Pct%, carregando ate 40%..."
@@ -292,13 +424,30 @@ function Aplicar-Logica {
         $lblStatusValor.Text      = "Descarregando"
         $lblStatusValor.ForeColor = [System.Drawing.Color]::FromArgb(226, 75, 74)
 
-        if ($Pct -lt 40) {
-            $aviso = "Bateria em $Pct%! Carregue ate 40%."
-            $painelAviso.BackColor = [System.Drawing.Color]::FromArgb(252, 235, 235)
-            $lblAvisoPre.ForeColor = [System.Drawing.Color]::FromArgb(163, 45, 45)
-            $lblAviso.ForeColor    = [System.Drawing.Color]::FromArgb(163, 45, 45)
+        if ($Pct -gt 50) {
+            # Acima de 50%: ativa dreno para gastar ate 50%
+            if (-not $script:drenoAtivo -and $script:rodando) {
+                Iniciar-EstresseCPU
+            }
+            Atualizar-PainelDreno
+            $aviso = "Drenando bateria... Aguarde, $Pct% ainda."
+            $painelAviso.BackColor = [System.Drawing.Color]::FromArgb(252, 243, 226)
+            $lblAvisoPre.ForeColor = [System.Drawing.Color]::FromArgb(150, 100, 20)
+            $lblAviso.ForeColor    = [System.Drawing.Color]::FromArgb(150, 100, 20)
 
-        } elseif ($Pct -lt 50) {
+        } elseif ($Pct -eq 50) {
+            # Atingiu 50%: para dreno, aguarda normalmente
+            if ($script:drenoAtivo) { Parar-EstresseCPU }
+            Atualizar-PainelDreno
+            $aviso = "Bateria em 50%! Dreno encerrado. Aguardando..."
+            $painelAviso.BackColor = [System.Drawing.Color]::FromArgb(241, 239, 232)
+            $lblAvisoPre.ForeColor = [System.Drawing.Color]::FromArgb(136, 135, 128)
+            $lblAviso.ForeColor    = [System.Drawing.Color]::FromArgb(95, 94, 90)
+
+        } elseif ($Pct -ge 40) {
+            # Entre 40% e 49%: desliga
+            if ($script:drenoAtivo) { Parar-EstresseCPU }
+            Atualizar-PainelDreno
             $aviso = "Bateria em $Pct%! Desligando agora..."
             $painelAviso.BackColor = [System.Drawing.Color]::FromArgb(252, 235, 235)
             $lblAvisoPre.ForeColor = [System.Drawing.Color]::FromArgb(163, 45, 45)
@@ -310,10 +459,13 @@ function Aplicar-Logica {
             return
 
         } else {
-            $aviso = "Aguarde, $Pct% ainda..."
-            $painelAviso.BackColor = [System.Drawing.Color]::FromArgb(241, 239, 232)
-            $lblAvisoPre.ForeColor = [System.Drawing.Color]::FromArgb(136, 135, 128)
-            $lblAviso.ForeColor    = [System.Drawing.Color]::FromArgb(95, 94, 90)
+            # Abaixo de 40%: avisa para carregar
+            if ($script:drenoAtivo) { Parar-EstresseCPU }
+            Atualizar-PainelDreno
+            $aviso = "Bateria em $Pct%! Carregue ate 40%."
+            $painelAviso.BackColor = [System.Drawing.Color]::FromArgb(252, 235, 235)
+            $lblAvisoPre.ForeColor = [System.Drawing.Color]::FromArgb(163, 45, 45)
+            $lblAviso.ForeColor    = [System.Drawing.Color]::FromArgb(163, 45, 45)
         }
     }
 
@@ -362,6 +514,8 @@ $btnStart.Add_Click({
 $btnStop.Add_Click({
     $script:rodando = $false
     $timer.Stop()
+    Parar-EstresseCPU
+    Atualizar-PainelDreno
 
     $btnStart.Enabled   = $true
     $btnStart.BackColor = [System.Drawing.Color]::FromArgb(29, 158, 117)
