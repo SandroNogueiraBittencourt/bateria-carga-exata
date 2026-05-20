@@ -56,7 +56,7 @@ function Get-CorBarra {
 
 $form = New-Object System.Windows.Forms.Form
 $form.Text            = "Monitor de Bateria"
-$form.Size            = New-Object System.Drawing.Size(400, 530)
+$form.Size            = New-Object System.Drawing.Size(400, 600)
 $form.StartPosition   = "CenterScreen"
 $form.FormBorderStyle = "FixedSingle"
 $form.MaximizeBox     = $false
@@ -82,7 +82,7 @@ $form.Controls.Add($lblSub)
 
 # --- Painel porcentagem ---
 $painelPct = New-Object System.Windows.Forms.Panel
-$painelPct.Size        = New-Object System.Drawing.Size(358, 140)
+$painelPct.Size        = New-Object System.Drawing.Size(358, 150)
 $painelPct.Location    = New-Object System.Drawing.Point(20, 80)
 $painelPct.BackColor   = [System.Drawing.Color]::White
 $painelPct.BorderStyle = "FixedSingle"
@@ -134,8 +134,8 @@ $painelPct.Controls.Add($lblMarca40)
 
 # --- Card Status ---
 $cardStatus = New-Object System.Windows.Forms.Panel
-$cardStatus.Size        = New-Object System.Drawing.Size(170, 70)
-$cardStatus.Location    = New-Object System.Drawing.Point(20, 238)
+$cardStatus.Size        = New-Object System.Drawing.Size(174, 80)
+$cardStatus.Location    = New-Object System.Drawing.Point(20, 250)
 $cardStatus.BackColor   = [System.Drawing.Color]::White
 $cardStatus.BorderStyle = "FixedSingle"
 $form.Controls.Add($cardStatus)
@@ -158,8 +158,8 @@ $cardStatus.Controls.Add($lblStatusValor)
 
 # --- Card Monitor ---
 $cardMonitor = New-Object System.Windows.Forms.Panel
-$cardMonitor.Size        = New-Object System.Drawing.Size(170, 70)
-$cardMonitor.Location    = New-Object System.Drawing.Point(208, 238)
+$cardMonitor.Size        = New-Object System.Drawing.Size(174, 80)
+$cardMonitor.Location    = New-Object System.Drawing.Point(204, 250)
 $cardMonitor.BackColor   = [System.Drawing.Color]::White
 $cardMonitor.BorderStyle = "FixedSingle"
 $form.Controls.Add($cardMonitor)
@@ -182,8 +182,8 @@ $cardMonitor.Controls.Add($lblMonitorValor)
 
 # --- Painel de aviso ---
 $painelAviso = New-Object System.Windows.Forms.Panel
-$painelAviso.Size        = New-Object System.Drawing.Size(358, 64)
-$painelAviso.Location    = New-Object System.Drawing.Point(20, 326)
+$painelAviso.Size        = New-Object System.Drawing.Size(358, 70)
+$painelAviso.Location    = New-Object System.Drawing.Point(20, 350)
 $painelAviso.BackColor   = [System.Drawing.Color]::FromArgb(241, 239, 232)
 $painelAviso.BorderStyle = "FixedSingle"
 $form.Controls.Add($painelAviso)
@@ -200,14 +200,14 @@ $lblAviso = New-Object System.Windows.Forms.Label
 $lblAviso.Text      = "Aguardando inicio do monitoramento..."
 $lblAviso.Font      = New-Object System.Drawing.Font("Segoe UI", 10)
 $lblAviso.ForeColor = [System.Drawing.Color]::FromArgb(95, 94, 90)
-$lblAviso.Size      = New-Object System.Drawing.Size(310, 50)
+$lblAviso.Size      = New-Object System.Drawing.Size(310, 58)
 $lblAviso.Location  = New-Object System.Drawing.Point(44, 8)
 $painelAviso.Controls.Add($lblAviso)
 
 # --- Legenda ---
 $painelLegenda = New-Object System.Windows.Forms.Panel
 $painelLegenda.Size        = New-Object System.Drawing.Size(358, 40)
-$painelLegenda.Location    = New-Object System.Drawing.Point(20, 406)
+$painelLegenda.Location    = New-Object System.Drawing.Point(20, 436)
 $painelLegenda.BackColor   = [System.Drawing.Color]::White
 $painelLegenda.BorderStyle = "FixedSingle"
 $form.Controls.Add($painelLegenda)
@@ -238,8 +238,8 @@ foreach ($item in $legendaItens) {
 # --- Botoes ---
 $btnStart = New-Object System.Windows.Forms.Button
 $btnStart.Text      = "Start"
-$btnStart.Size      = New-Object System.Drawing.Size(170, 44)
-$btnStart.Location  = New-Object System.Drawing.Point(20, 462)
+$btnStart.Size      = New-Object System.Drawing.Size(174, 46)
+$btnStart.Location  = New-Object System.Drawing.Point(20, 492)
 $btnStart.FlatStyle = "Flat"
 $btnStart.BackColor = [System.Drawing.Color]::FromArgb(29, 158, 117)
 $btnStart.ForeColor = [System.Drawing.Color]::White
@@ -249,8 +249,8 @@ $form.Controls.Add($btnStart)
 
 $btnStop = New-Object System.Windows.Forms.Button
 $btnStop.Text      = "Parar"
-$btnStop.Size      = New-Object System.Drawing.Size(170, 44)
-$btnStop.Location  = New-Object System.Drawing.Point(208, 462)
+$btnStop.Size      = New-Object System.Drawing.Size(174, 46)
+$btnStop.Location  = New-Object System.Drawing.Point(204, 492)
 $btnStop.FlatStyle = "Flat"
 $btnStop.BackColor = [System.Drawing.Color]::FromArgb(209, 209, 199)
 $btnStop.ForeColor = [System.Drawing.Color]::FromArgb(95, 94, 90)
