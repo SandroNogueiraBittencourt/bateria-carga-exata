@@ -1,11 +1,10 @@
 # ============================================================
 #  carregamentoBateria.ps1
-#  Interface grafica + monitoramento + dreno de bateria
+#  Interface grafica RESPONSIVA + monitoramento + dreno
 #
 #  Logica:
 #  DESCARREGANDO:
 #    > 50%      -> ativa dreno (CPU stress + brilho maximo)
-#                  ate chegar em 50%, depois desativa dreno
 #    40% a 49%  -> desliga o computador
 #    < 40%      -> avisa para carregar
 #
@@ -19,7 +18,7 @@
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
-# --- API para impedir suspensao e bloqueio de tela ---
+# --- APIs nativas ---
 Add-Type -TypeDefinition @"
 using System;
 using System.Runtime.InteropServices;
@@ -42,18 +41,27 @@ public static class PowerState {
         SetThreadExecutionState(ES_CONTINUOUS);
     }
 }
+
+public static class DpiHelper {
+    [DllImport("user32.dll")]
+    public static extern bool SetProcessDPIAware();
+}
 "@
+
+# Ativa DPI awareness antes de criar a janela
+[DpiHelper]::SetProcessDPIAware()
 
 # --- Configuracoes ---
 $INTERVALO_MS     = 3000
 $FREQ_BIP         = 1000
 $DUR_BIP          = 400
-$NUM_THREADS_CPU  = [Environment]::ProcessorCount   # usa todos os nucleos
+$NUM_THREADS_CPU  = [Environment]::ProcessorCount
+$MARGEM           = 16   # margem lateral padrao
 
 # --- Estado global ---
-$script:rodando     = $false
-$script:drenoAtivo  = $false
-$script:jobsCPU     = @()
+$script:rodando       = $false
+$script:drenoAtivo    = $false
+$script:jobsCPU       = @()
 $script:brilhoOriginal = $null
 
 # ============================================================
@@ -69,9 +77,7 @@ function Get-BateriaInfo {
     }
 }
 
-function Emitir-Bip {
-    [Console]::Beep($FREQ_BIP, $DUR_BIP)
-}
+function Emitir-Bip { [Console]::Beep($FREQ_BIP, $DUR_BIP) }
 
 function Get-CorBarra {
     param([int]$Pct)
@@ -101,12 +107,8 @@ function Set-Brilho {
 function Iniciar-EstresseCPU {
     if ($script:drenoAtivo) { return }
     $script:drenoAtivo = $true
-
-    # Salva e aumenta brilho
     $script:brilhoOriginal = Get-BrilhoAtual
     Set-Brilho -Nivel 100
-
-    # Inicia N jobs de CPU em paralelo (loop infinito de calculos)
     $script:jobsCPU = @()
     for ($i = 0; $i -lt $NUM_THREADS_CPU; $i++) {
         $job = Start-Job -ScriptBlock {
@@ -123,84 +125,101 @@ function Iniciar-EstresseCPU {
 function Parar-EstresseCPU {
     if (-not $script:drenoAtivo) { return }
     $script:drenoAtivo = $false
-
-    # Para todos os jobs
     foreach ($job in $script:jobsCPU) {
         Stop-Job -Job $job -ErrorAction SilentlyContinue
         Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
     }
     $script:jobsCPU = @()
-
-    # Restaura brilho original
     if ($null -ne $script:brilhoOriginal) {
         Set-Brilho -Nivel $script:brilhoOriginal
     }
 }
 
 # ============================================================
-#  JANELA PRINCIPAL
+#  JANELA PRINCIPAL (responsiva)
 # ============================================================
 
 $form = New-Object System.Windows.Forms.Form
 $form.Text            = "Monitor de Bateria"
-$form.Size            = New-Object System.Drawing.Size(400, 660)
+$form.MinimumSize     = New-Object System.Drawing.Size(360, 580)
+$form.Size            = New-Object System.Drawing.Size(420, 680)
 $form.StartPosition   = "CenterScreen"
-$form.FormBorderStyle = "FixedSingle"
-$form.MaximizeBox     = $false
 $form.BackColor       = [System.Drawing.Color]::FromArgb(245, 245, 243)
 $form.Font            = New-Object System.Drawing.Font("Segoe UI", 10)
+$form.AutoScaleMode   = [System.Windows.Forms.AutoScaleMode]::Dpi
+$form.Padding         = New-Object System.Windows.Forms.Padding($MARGEM)
 
-# Garante limpeza ao fechar
 $form.Add_FormClosing({
     Parar-EstresseCPU
     [PowerState]::AllowSleep()
 })
 
-# --- Titulo ---
-$lblTitulo = New-Object System.Windows.Forms.Label
-$lblTitulo.Text      = "Monitor de Bateria"
-$lblTitulo.Font      = New-Object System.Drawing.Font("Segoe UI", 13, [System.Drawing.FontStyle]::Bold)
-$lblTitulo.ForeColor = [System.Drawing.Color]::FromArgb(44, 44, 42)
-$lblTitulo.AutoSize  = $true
-$lblTitulo.Location  = New-Object System.Drawing.Point(20, 20)
-$form.Controls.Add($lblTitulo)
+# ============================================================
+#  HELPER: cria Label de forma concisa
+# ============================================================
 
-$lblSub = New-Object System.Windows.Forms.Label
-$lblSub.Text      = "Windows 11 - Script PowerShell"
-$lblSub.Font      = New-Object System.Drawing.Font("Segoe UI", 9)
-$lblSub.ForeColor = [System.Drawing.Color]::FromArgb(136, 135, 128)
-$lblSub.AutoSize  = $true
-$lblSub.Location  = New-Object System.Drawing.Point(20, 48)
-$form.Controls.Add($lblSub)
+function New-Label {
+    param(
+        [string]$Text, [float]$FontSize = 10,
+        [System.Drawing.FontStyle]$Style = "Regular",
+        [System.Drawing.Color]$Color = [System.Drawing.Color]::FromArgb(44, 44, 42),
+        [bool]$AutoSize = $true
+    )
+    $l = New-Object System.Windows.Forms.Label
+    $l.Text      = $Text
+    $l.Font      = New-Object System.Drawing.Font("Segoe UI", $FontSize, $Style)
+    $l.ForeColor = $Color
+    $l.AutoSize  = $AutoSize
+    return $l
+}
 
-# --- Painel porcentagem ---
+# ============================================================
+#  CONTAINER PRINCIPAL (ScrollPanel para telas pequenas)
+# ============================================================
+
+$container = New-Object System.Windows.Forms.Panel
+$container.Dock       = "Fill"
+$container.AutoScroll = $true
+$container.Padding    = New-Object System.Windows.Forms.Padding(0, 0, 0, 10)
+$form.Controls.Add($container)
+
+# ============================================================
+#  TITULO
+# ============================================================
+
+$lblTitulo = New-Label -Text "Monitor de Bateria" -FontSize 14 -Style Bold
+$lblTitulo.Location = New-Object System.Drawing.Point(4, 8)
+$container.Controls.Add($lblTitulo)
+
+$lblSub = New-Label -Text "Windows 11 - Script PowerShell" -FontSize 9 `
+    -Color ([System.Drawing.Color]::FromArgb(136, 135, 128))
+$lblSub.Location = New-Object System.Drawing.Point(4, 36)
+$container.Controls.Add($lblSub)
+
+# ============================================================
+#  PAINEL PORCENTAGEM
+# ============================================================
+
 $painelPct = New-Object System.Windows.Forms.Panel
-$painelPct.Size        = New-Object System.Drawing.Size(358, 150)
-$painelPct.Location    = New-Object System.Drawing.Point(20, 80)
+$painelPct.Location    = New-Object System.Drawing.Point(0, 66)
+$painelPct.Height      = 120
 $painelPct.BackColor   = [System.Drawing.Color]::White
 $painelPct.BorderStyle = "FixedSingle"
-$form.Controls.Add($painelPct)
+$painelPct.Anchor      = "Top,Left,Right"
+$container.Controls.Add($painelPct)
 
-$lblPct = New-Object System.Windows.Forms.Label
-$lblPct.Text      = "--"
-$lblPct.Font      = New-Object System.Drawing.Font("Segoe UI", 52, [System.Drawing.FontStyle]::Bold)
-$lblPct.ForeColor = [System.Drawing.Color]::FromArgb(44, 44, 42)
-$lblPct.AutoSize  = $true
-$lblPct.Location  = New-Object System.Drawing.Point(16, 14)
+$lblPct = New-Label -Text "--" -FontSize 46 -Style Bold
+$lblPct.Location = New-Object System.Drawing.Point(12, 6)
 $painelPct.Controls.Add($lblPct)
 
-$lblDeCarga = New-Object System.Windows.Forms.Label
-$lblDeCarga.Text      = "de carga"
-$lblDeCarga.Font      = New-Object System.Drawing.Font("Segoe UI", 10)
-$lblDeCarga.ForeColor = [System.Drawing.Color]::FromArgb(136, 135, 128)
-$lblDeCarga.AutoSize  = $true
-$lblDeCarga.Location  = New-Object System.Drawing.Point(18, 92)
+$lblDeCarga = New-Label -Text "de carga" -FontSize 9 `
+    -Color ([System.Drawing.Color]::FromArgb(136, 135, 128))
+$lblDeCarga.Location = New-Object System.Drawing.Point(14, 72)
 $painelPct.Controls.Add($lblDeCarga)
 
-# Barra de progresso
+# Barra de progresso (reposicionada no Resize)
 $barraPanel = New-Object System.Windows.Forms.Panel
-$barraPanel.Size      = New-Object System.Drawing.Size(210, 16)
-$barraPanel.Location  = New-Object System.Drawing.Point(130, 30)
+$barraPanel.Height    = 16
 $barraPanel.BackColor = [System.Drawing.Color]::FromArgb(209, 209, 199)
 $painelPct.Controls.Add($barraPanel)
 
@@ -210,193 +229,245 @@ $barraFill.Location  = New-Object System.Drawing.Point(0, 0)
 $barraFill.BackColor = [System.Drawing.Color]::FromArgb(29, 158, 117)
 $barraPanel.Controls.Add($barraFill)
 
-# Marcacao 40%
+# Marcadores (reposicionados no Resize)
 $marca40 = New-Object System.Windows.Forms.Panel
 $marca40.Size      = New-Object System.Drawing.Size(2, 24)
-$marca40.Location  = New-Object System.Drawing.Point([int](210 * 0.40), -4)
 $marca40.BackColor = [System.Drawing.Color]::FromArgb(226, 75, 74)
 $barraPanel.Controls.Add($marca40)
 
-$lblMarca40 = New-Object System.Windows.Forms.Label
-$lblMarca40.Text      = "40%"
-$lblMarca40.Font      = New-Object System.Drawing.Font("Segoe UI", 8)
-$lblMarca40.ForeColor = [System.Drawing.Color]::FromArgb(226, 75, 74)
-$lblMarca40.AutoSize  = $true
-$lblMarca40.Location  = New-Object System.Drawing.Point(130, 50)
-$painelPct.Controls.Add($lblMarca40)
-
-# Marcacao 50%
 $marca50 = New-Object System.Windows.Forms.Panel
 $marca50.Size      = New-Object System.Drawing.Size(2, 24)
-$marca50.Location  = New-Object System.Drawing.Point([int](210 * 0.50), -4)
 $marca50.BackColor = [System.Drawing.Color]::FromArgb(239, 159, 39)
 $barraPanel.Controls.Add($marca50)
 
-$lblMarca50 = New-Object System.Windows.Forms.Label
-$lblMarca50.Text      = "50%"
-$lblMarca50.Font      = New-Object System.Drawing.Font("Segoe UI", 8)
-$lblMarca50.ForeColor = [System.Drawing.Color]::FromArgb(239, 159, 39)
-$lblMarca50.AutoSize  = $true
-$lblMarca50.Location  = New-Object System.Drawing.Point(162, 50)
+$lblMarca40 = New-Label -Text "40%" -FontSize 8 `
+    -Color ([System.Drawing.Color]::FromArgb(226, 75, 74))
+$painelPct.Controls.Add($lblMarca40)
+
+$lblMarca50 = New-Label -Text "50%" -FontSize 8 `
+    -Color ([System.Drawing.Color]::FromArgb(239, 159, 39))
 $painelPct.Controls.Add($lblMarca50)
 
-# --- Cards ---
+# ============================================================
+#  CARDS (STATUS + MONITORAMENTO) - lado a lado
+# ============================================================
+
 $cardStatus = New-Object System.Windows.Forms.Panel
-$cardStatus.Size        = New-Object System.Drawing.Size(174, 80)
-$cardStatus.Location    = New-Object System.Drawing.Point(20, 250)
+$cardStatus.Height      = 72
 $cardStatus.BackColor   = [System.Drawing.Color]::White
 $cardStatus.BorderStyle = "FixedSingle"
-$form.Controls.Add($cardStatus)
+$container.Controls.Add($cardStatus)
 
-$lblStatusTitulo = New-Object System.Windows.Forms.Label
-$lblStatusTitulo.Text      = "STATUS"
-$lblStatusTitulo.Font      = New-Object System.Drawing.Font("Segoe UI", 8)
-$lblStatusTitulo.ForeColor = [System.Drawing.Color]::FromArgb(136, 135, 128)
-$lblStatusTitulo.AutoSize  = $true
-$lblStatusTitulo.Location  = New-Object System.Drawing.Point(10, 10)
+$lblStatusTitulo = New-Label -Text "STATUS" -FontSize 8 `
+    -Color ([System.Drawing.Color]::FromArgb(136, 135, 128))
+$lblStatusTitulo.Location = New-Object System.Drawing.Point(10, 8)
 $cardStatus.Controls.Add($lblStatusTitulo)
 
-$lblStatusValor = New-Object System.Windows.Forms.Label
-$lblStatusValor.Text      = "--"
-$lblStatusValor.Font      = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
-$lblStatusValor.ForeColor = [System.Drawing.Color]::FromArgb(44, 44, 42)
-$lblStatusValor.AutoSize  = $true
-$lblStatusValor.Location  = New-Object System.Drawing.Point(10, 34)
+$lblStatusValor = New-Label -Text "--" -FontSize 11 -Style Bold
+$lblStatusValor.Location = New-Object System.Drawing.Point(10, 32)
 $cardStatus.Controls.Add($lblStatusValor)
 
 $cardMonitor = New-Object System.Windows.Forms.Panel
-$cardMonitor.Size        = New-Object System.Drawing.Size(174, 80)
-$cardMonitor.Location    = New-Object System.Drawing.Point(204, 250)
+$cardMonitor.Height      = 72
 $cardMonitor.BackColor   = [System.Drawing.Color]::White
 $cardMonitor.BorderStyle = "FixedSingle"
-$form.Controls.Add($cardMonitor)
+$container.Controls.Add($cardMonitor)
 
-$lblMonitorTitulo = New-Object System.Windows.Forms.Label
-$lblMonitorTitulo.Text      = "MONITORAMENTO"
-$lblMonitorTitulo.Font      = New-Object System.Drawing.Font("Segoe UI", 8)
-$lblMonitorTitulo.ForeColor = [System.Drawing.Color]::FromArgb(136, 135, 128)
-$lblMonitorTitulo.AutoSize  = $true
-$lblMonitorTitulo.Location  = New-Object System.Drawing.Point(10, 10)
+$lblMonitorTitulo = New-Label -Text "MONITORAMENTO" -FontSize 8 `
+    -Color ([System.Drawing.Color]::FromArgb(136, 135, 128))
+$lblMonitorTitulo.Location = New-Object System.Drawing.Point(10, 8)
 $cardMonitor.Controls.Add($lblMonitorTitulo)
 
-$lblMonitorValor = New-Object System.Windows.Forms.Label
-$lblMonitorValor.Text      = "Parado"
-$lblMonitorValor.Font      = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
-$lblMonitorValor.ForeColor = [System.Drawing.Color]::FromArgb(136, 135, 128)
-$lblMonitorValor.AutoSize  = $true
-$lblMonitorValor.Location  = New-Object System.Drawing.Point(10, 34)
+$lblMonitorValor = New-Label -Text "Parado" -FontSize 11 -Style Bold `
+    -Color ([System.Drawing.Color]::FromArgb(136, 135, 128))
+$lblMonitorValor.Location = New-Object System.Drawing.Point(10, 32)
 $cardMonitor.Controls.Add($lblMonitorValor)
 
-# --- Painel Dreno de Bateria ---
+# ============================================================
+#  PAINEL DRENO
+# ============================================================
+
 $painelDreno = New-Object System.Windows.Forms.Panel
-$painelDreno.Size        = New-Object System.Drawing.Size(358, 56)
-$painelDreno.Location    = New-Object System.Drawing.Point(20, 350)
+$painelDreno.Height      = 52
 $painelDreno.BackColor   = [System.Drawing.Color]::FromArgb(241, 239, 232)
 $painelDreno.BorderStyle = "FixedSingle"
-$form.Controls.Add($painelDreno)
+$painelDreno.Anchor      = "Top,Left,Right"
+$container.Controls.Add($painelDreno)
 
-$lblDrenoTitulo = New-Object System.Windows.Forms.Label
-$lblDrenoTitulo.Text      = "DRENO DE BATERIA"
-$lblDrenoTitulo.Font      = New-Object System.Drawing.Font("Segoe UI", 8)
-$lblDrenoTitulo.ForeColor = [System.Drawing.Color]::FromArgb(136, 135, 128)
-$lblDrenoTitulo.AutoSize  = $true
-$lblDrenoTitulo.Location  = New-Object System.Drawing.Point(10, 6)
+$lblDrenoTitulo = New-Label -Text "DRENO DE BATERIA" -FontSize 8 `
+    -Color ([System.Drawing.Color]::FromArgb(136, 135, 128))
+$lblDrenoTitulo.Location = New-Object System.Drawing.Point(10, 4)
 $painelDreno.Controls.Add($lblDrenoTitulo)
 
-$lblDrenoValor = New-Object System.Windows.Forms.Label
-$lblDrenoValor.Text      = "Inativo"
-$lblDrenoValor.Font      = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
-$lblDrenoValor.ForeColor = [System.Drawing.Color]::FromArgb(136, 135, 128)
-$lblDrenoValor.AutoSize  = $true
-$lblDrenoValor.Location  = New-Object System.Drawing.Point(10, 28)
+$lblDrenoValor = New-Label -Text "Inativo" -FontSize 10 -Style Bold `
+    -Color ([System.Drawing.Color]::FromArgb(136, 135, 128))
+$lblDrenoValor.Location = New-Object System.Drawing.Point(10, 26)
 $painelDreno.Controls.Add($lblDrenoValor)
 
-$lblDrenoInfo = New-Object System.Windows.Forms.Label
-$lblDrenoInfo.Text      = ""
-$lblDrenoInfo.Font      = New-Object System.Drawing.Font("Segoe UI", 8)
-$lblDrenoInfo.ForeColor = [System.Drawing.Color]::FromArgb(136, 135, 128)
-$lblDrenoInfo.AutoSize  = $true
-$lblDrenoInfo.Location  = New-Object System.Drawing.Point(150, 32)
+$lblDrenoInfo = New-Label -Text "" -FontSize 8 `
+    -Color ([System.Drawing.Color]::FromArgb(136, 135, 128))
+$lblDrenoInfo.Location = New-Object System.Drawing.Point(150, 30)
 $painelDreno.Controls.Add($lblDrenoInfo)
 
-# --- Painel de aviso ---
+# ============================================================
+#  PAINEL AVISO
+# ============================================================
+
 $painelAviso = New-Object System.Windows.Forms.Panel
-$painelAviso.Size        = New-Object System.Drawing.Size(358, 70)
-$painelAviso.Location    = New-Object System.Drawing.Point(20, 422)
+$painelAviso.Height      = 62
 $painelAviso.BackColor   = [System.Drawing.Color]::FromArgb(241, 239, 232)
 $painelAviso.BorderStyle = "FixedSingle"
-$form.Controls.Add($painelAviso)
+$painelAviso.Anchor      = "Top,Left,Right"
+$container.Controls.Add($painelAviso)
 
-$lblAvisoPre = New-Object System.Windows.Forms.Label
-$lblAvisoPre.Text      = "!"
-$lblAvisoPre.Font      = New-Object System.Drawing.Font("Segoe UI", 18, [System.Drawing.FontStyle]::Bold)
-$lblAvisoPre.ForeColor = [System.Drawing.Color]::FromArgb(136, 135, 128)
-$lblAvisoPre.AutoSize  = $true
-$lblAvisoPre.Location  = New-Object System.Drawing.Point(12, 16)
+$lblAvisoPre = New-Label -Text "!" -FontSize 16 -Style Bold `
+    -Color ([System.Drawing.Color]::FromArgb(136, 135, 128))
+$lblAvisoPre.Location = New-Object System.Drawing.Point(10, 14)
 $painelAviso.Controls.Add($lblAvisoPre)
 
 $lblAviso = New-Object System.Windows.Forms.Label
 $lblAviso.Text      = "Aguardando inicio do monitoramento..."
 $lblAviso.Font      = New-Object System.Drawing.Font("Segoe UI", 10)
 $lblAviso.ForeColor = [System.Drawing.Color]::FromArgb(95, 94, 90)
-$lblAviso.Size      = New-Object System.Drawing.Size(310, 58)
-$lblAviso.Location  = New-Object System.Drawing.Point(44, 8)
+$lblAviso.Location  = New-Object System.Drawing.Point(38, 6)
+$lblAviso.AutoSize  = $false
+$lblAviso.Anchor    = "Top,Left,Right"
 $painelAviso.Controls.Add($lblAviso)
 
-# --- Legenda ---
+# ============================================================
+#  LEGENDA
+# ============================================================
+
 $painelLegenda = New-Object System.Windows.Forms.Panel
-$painelLegenda.Size        = New-Object System.Drawing.Size(358, 40)
-$painelLegenda.Location    = New-Object System.Drawing.Point(20, 508)
+$painelLegenda.Height      = 36
 $painelLegenda.BackColor   = [System.Drawing.Color]::White
 $painelLegenda.BorderStyle = "FixedSingle"
-$form.Controls.Add($painelLegenda)
+$painelLegenda.Anchor      = "Top,Left,Right"
+$container.Controls.Add($painelLegenda)
 
-$legendaItens = @(
-    @{ Cor = [System.Drawing.Color]::FromArgb(226,75,74);   Texto = "< 40%";      X = 8   },
-    @{ Cor = [System.Drawing.Color]::FromArgb(239,159,39);  Texto = "40-49%";     X = 74  },
-    @{ Cor = [System.Drawing.Color]::FromArgb(29,158,117);  Texto = ">= 50%";     X = 148 },
-    @{ Cor = [System.Drawing.Color]::FromArgb(24,95,165);   Texto = "Carregando"; X = 220 }
+$legendaCores = @(
+    [System.Drawing.Color]::FromArgb(226,75,74),
+    [System.Drawing.Color]::FromArgb(239,159,39),
+    [System.Drawing.Color]::FromArgb(29,158,117),
+    [System.Drawing.Color]::FromArgb(24,95,165)
 )
+$legendaTextos = @("< 40%", "40-49%", ">= 50%", "Carregando")
+$legendaDots   = @()
+$legendaLabels = @()
 
-foreach ($item in $legendaItens) {
+for ($i = 0; $i -lt 4; $i++) {
     $dot = New-Object System.Windows.Forms.Panel
     $dot.Size      = New-Object System.Drawing.Size(10, 10)
-    $dot.Location  = New-Object System.Drawing.Point($item.X, 15)
-    $dot.BackColor = $item.Cor
+    $dot.BackColor = $legendaCores[$i]
     $painelLegenda.Controls.Add($dot)
+    $legendaDots += $dot
 
-    $lbl = New-Object System.Windows.Forms.Label
-    $lbl.Text      = $item.Texto
-    $lbl.Font      = New-Object System.Drawing.Font("Segoe UI", 8)
-    $lbl.ForeColor = [System.Drawing.Color]::FromArgb(95, 94, 90)
-    $lbl.AutoSize  = $true
-    $lbl.Location  = New-Object System.Drawing.Point(($item.X + 14), 14)
-    $painelLegenda.Controls.Add($lbl)
+    $ll = New-Label -Text $legendaTextos[$i] -FontSize 8 `
+        -Color ([System.Drawing.Color]::FromArgb(95, 94, 90))
+    $painelLegenda.Controls.Add($ll)
+    $legendaLabels += $ll
 }
 
-# --- Botoes ---
+# ============================================================
+#  BOTOES
+# ============================================================
+
 $btnStart = New-Object System.Windows.Forms.Button
 $btnStart.Text      = "Start"
-$btnStart.Size      = New-Object System.Drawing.Size(174, 46)
-$btnStart.Location  = New-Object System.Drawing.Point(20, 564)
+$btnStart.Height    = 44
 $btnStart.FlatStyle = "Flat"
 $btnStart.BackColor = [System.Drawing.Color]::FromArgb(29, 158, 117)
 $btnStart.ForeColor = [System.Drawing.Color]::White
 $btnStart.Font      = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
 $btnStart.FlatAppearance.BorderSize = 0
-$form.Controls.Add($btnStart)
+$btnStart.Cursor    = [System.Windows.Forms.Cursors]::Hand
+$container.Controls.Add($btnStart)
 
 $btnStop = New-Object System.Windows.Forms.Button
 $btnStop.Text      = "Parar"
-$btnStop.Size      = New-Object System.Drawing.Size(174, 46)
-$btnStop.Location  = New-Object System.Drawing.Point(204, 564)
+$btnStop.Height    = 44
 $btnStop.FlatStyle = "Flat"
 $btnStop.BackColor = [System.Drawing.Color]::FromArgb(209, 209, 199)
 $btnStop.ForeColor = [System.Drawing.Color]::FromArgb(95, 94, 90)
 $btnStop.Font      = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
 $btnStop.FlatAppearance.BorderSize = 0
 $btnStop.Enabled   = $false
-$form.Controls.Add($btnStop)
+$btnStop.Cursor    = [System.Windows.Forms.Cursors]::Hand
+$container.Controls.Add($btnStop)
+
+# ============================================================
+#  LAYOUT RESPONSIVO - funcao de recalculo
+# ============================================================
+
+function Recalcular-Layout {
+    $cw  = $container.ClientSize.Width
+    $gap = 10
+    $y   = 66   # inicio apos titulo
+
+    # --- Painel porcentagem ---
+    $painelPct.Location = New-Object System.Drawing.Point(0, $y)
+    $painelPct.Width    = $cw
+
+    # Barra de progresso (ocupa metade direita do painel)
+    $barraX = [int]($cw * 0.36)
+    $barraW = $cw - $barraX - 20
+    $barraPanel.Location = New-Object System.Drawing.Point($barraX, 24)
+    $barraPanel.Width    = $barraW
+
+    # Marcadores proporcionais
+    $marca40.Location = New-Object System.Drawing.Point([int]($barraW * 0.40), -4)
+    $marca50.Location = New-Object System.Drawing.Point([int]($barraW * 0.50), -4)
+    $lblMarca40.Location = New-Object System.Drawing.Point(($barraX + [int]($barraW * 0.40) - 10), 44)
+    $lblMarca50.Location = New-Object System.Drawing.Point(($barraX + [int]($barraW * 0.50) - 10), 44)
+
+    # Info de intervalo
+    $y = $y + $painelPct.Height + $gap
+
+    # --- Cards lado a lado ---
+    $cardW = [int](($cw - $gap) / 2)
+    $cardStatus.Location = New-Object System.Drawing.Point(0, $y)
+    $cardStatus.Width    = $cardW
+    $cardMonitor.Location = New-Object System.Drawing.Point(($cardW + $gap), $y)
+    $cardMonitor.Width    = $cw - $cardW - $gap
+
+    $y = $y + $cardStatus.Height + $gap
+
+    # --- Painel dreno ---
+    $painelDreno.Location = New-Object System.Drawing.Point(0, $y)
+    $painelDreno.Width    = $cw
+    $y = $y + $painelDreno.Height + $gap
+
+    # --- Painel aviso ---
+    $painelAviso.Location = New-Object System.Drawing.Point(0, $y)
+    $painelAviso.Width    = $cw
+    $lblAviso.Size = New-Object System.Drawing.Size(($cw - 54), 50)
+    $y = $y + $painelAviso.Height + $gap
+
+    # --- Legenda ---
+    $painelLegenda.Location = New-Object System.Drawing.Point(0, $y)
+    $painelLegenda.Width    = $cw
+
+    # Distribui itens da legenda igualmente
+    $segW = [int]($cw / 4)
+    for ($i = 0; $i -lt 4; $i++) {
+        $lx = $segW * $i + 8
+        $legendaDots[$i].Location  = New-Object System.Drawing.Point($lx, 13)
+        $legendaLabels[$i].Location = New-Object System.Drawing.Point(($lx + 14), 12)
+    }
+
+    $y = $y + $painelLegenda.Height + $gap
+
+    # --- Botoes lado a lado ---
+    $btnW = [int](($cw - $gap) / 2)
+    $btnStart.Location = New-Object System.Drawing.Point(0, $y)
+    $btnStart.Width    = $btnW
+    $btnStop.Location  = New-Object System.Drawing.Point(($btnW + $gap), $y)
+    $btnStop.Width     = $cw - $btnW - $gap
+}
+
+# Conecta o resize
+$container.Add_Resize({ Recalcular-Layout })
+$form.Add_Shown({ Recalcular-Layout })
 
 # ============================================================
 #  LOGICA PRINCIPAL
@@ -417,19 +488,24 @@ function Atualizar-PainelDreno {
     }
 }
 
+function Atualizar-Barra {
+    param([int]$Pct)
+    $barraW = $barraPanel.Width
+    $barraFill.Width     = [int]($barraW * $Pct / 100)
+    $barraFill.BackColor = Get-CorBarra -Pct $Pct
+}
+
 function Aplicar-Logica {
     param([int]$Pct, [bool]$Carregando)
 
-    $lblPct.Text         = "$Pct%"
-    $lblPct.ForeColor    = Get-CorBarra -Pct $Pct
-    $barraFill.Width     = [int](210 * $Pct / 100)
-    $barraFill.BackColor = Get-CorBarra -Pct $Pct
+    $lblPct.Text      = "$Pct%"
+    $lblPct.ForeColor = Get-CorBarra -Pct $Pct
+    Atualizar-Barra -Pct $Pct
 
     if ($Carregando) {
         $lblStatusValor.Text      = "Carregando"
         $lblStatusValor.ForeColor = [System.Drawing.Color]::FromArgb(24, 95, 165)
 
-        # Se esta carregando, desativa dreno (usuario conectou na tomada)
         if ($script:drenoAtivo) { Parar-EstresseCPU }
         Atualizar-PainelDreno
 
@@ -451,7 +527,6 @@ function Aplicar-Logica {
         $lblStatusValor.ForeColor = [System.Drawing.Color]::FromArgb(226, 75, 74)
 
         if ($Pct -gt 50) {
-            # Acima de 50%: ativa dreno para gastar ate 50%
             if (-not $script:drenoAtivo -and $script:rodando) {
                 Iniciar-EstresseCPU
             }
@@ -462,7 +537,6 @@ function Aplicar-Logica {
             $lblAviso.ForeColor    = [System.Drawing.Color]::FromArgb(150, 100, 20)
 
         } elseif ($Pct -eq 50) {
-            # Atingiu 50%: para dreno, aguarda normalmente
             if ($script:drenoAtivo) { Parar-EstresseCPU }
             Atualizar-PainelDreno
             $aviso = "Bateria em 50%! Dreno encerrado. Aguardando..."
@@ -471,7 +545,6 @@ function Aplicar-Logica {
             $lblAviso.ForeColor    = [System.Drawing.Color]::FromArgb(95, 94, 90)
 
         } elseif ($Pct -ge 40) {
-            # Entre 40% e 49%: desliga
             if ($script:drenoAtivo) { Parar-EstresseCPU }
             Atualizar-PainelDreno
             $aviso = "Bateria em $Pct%! Desligando agora..."
@@ -485,7 +558,6 @@ function Aplicar-Logica {
             return
 
         } else {
-            # Abaixo de 40%: avisa para carregar
             if ($script:drenoAtivo) { Parar-EstresseCPU }
             Atualizar-PainelDreno
             $aviso = "Bateria em $Pct%! Carregue ate 40%."
@@ -521,8 +593,6 @@ $timer.Add_Tick({
 $btnStart.Add_Click({
     $script:rodando = $true
     $timer.Start()
-
-    # Impede suspensao e bloqueio de tela
     [PowerState]::PreventSleep()
 
     $btnStart.Enabled   = $false
@@ -545,8 +615,6 @@ $btnStop.Add_Click({
     $timer.Stop()
     Parar-EstresseCPU
     Atualizar-PainelDreno
-
-    # Restaura comportamento normal de suspensao/bloqueio
     [PowerState]::AllowSleep()
 
     $btnStart.Enabled   = $true
